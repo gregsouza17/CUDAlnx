@@ -2,6 +2,7 @@
 #include <cuda.h>
 
 
+void free_data(double ***data, int xlen, int ylen);
 
 
 extern __shared__ double cache[];
@@ -15,35 +16,48 @@ __global__ void kernel(int *Ss, int *Nn, int *mask, double *xyz,
   //cache =[threadIdx.x + threadIdx.y*blockDim.x]
 
   double temp=0;
-  long int i1,i2,j;
+  long int i1,i2,j, joffset=blockDim.y,i2offset=blockDim.x;
   int k, N=*Nn, S = *Ss, cacheIndex, cIndexMax;
-  i1 = blockIdx.x; i2 = threadIdx.x; j = threadIdx.y;
+  i1 = blockIdx.x; i2 = threadIdx.x;
 
   cacheIndex = threadIdx.x + threadIdx.y*blockDim.x;
   cIndexMax = blockDim.x*blockDim.y;
 
 
-   if (i1!=i2){ 
-     temp=0; 
-     for(k=0; k<3; k++){
+  while(i2<S){
+   
+    j = threadIdx.y;
+    while(j<N){
+      if (i1!=i2){ 
+	// temp=0; 
+	for(k=0; k<3; k++){
       
-      if(true){ 
+	  if( mask[k*N+j] ){ 
 	
 	//	temp+=1; 
 
-	temp+=
-   	   (xyz[i1+S*(j+N*k)] - xyz[i2+S*(j+N*k)])* 
-  	   (xyz[i1+S*(j+N*k)] - xyz[i2+S*(j+N*k)]); 
+	    //  printf("%f \t", xyz[i1+S*(j+N*k)]);
+	    temp+=
+	      (xyz[i1+S*(j+N*k)] - xyz[i2+S*(j+N*k)])* 
+	      (xyz[i1+S*(j+N*k)] - xyz[i2+S*(j+N*k)]) ; 
 	
-      } //if mask 
-        __syncthreads();   
-     } //k
-     // __syncthreads();
-   } //if i1!=i2 
+	  } //if mask 
 
-   __syncthreads();
+	} //k
+
+      } //if i1!=i2
   
-  cache[cacheIndex] = temp;
+   
+      __syncthreads();
+      j+=joffset;
+  } //while j<N;
+    __syncthreads();
+   i2+=i2offset;
+  } //while i2<S
+
+  __syncthreads();
+   cache[cacheIndex]+= temp;
+
 
  
 
@@ -64,22 +78,29 @@ __global__ void kernel(int *Ss, int *Nn, int *mask, double *xyz,
 
   __syncthreads();
 
-  if(i1==30 && (j+i2)==0)
-      printf("%f \n", cache[0]);
-  
   cost[i1] = cache[0];
  
 }
 
 int main()
 {
+
+  //Max double array length: 523268
+  // Max float array length: 1046537
+
+
   //Initializing
-  int N = 32, S = 32;
-  double xyz[3][N][S], linxyz[3*N*S],soma;
-  double cost[S];
+  long int N = 32, S = 32, sizexyz = N*S*3; 
+  double xyz[3][N][S]; 
+  double *linxyz;  
+  double cost[S], soma;
   int mask[3][N]={0}, linmask[3*N];
   long int i1,i2;
   long int j=0,k=0;
+ 
+  linxyz = (double *)malloc(sizexyz*sizeof(double));
+  
+  
 
   //mask
     for(k=0; k<3; k++){
@@ -95,13 +116,16 @@ int main()
 	linmask[j+N*k] = mask[k][j];
       }
     }
+
+
     //mask
 
     for(k=0; k<3; k++){
       for(j=0; j<N;j++){
 	for(i1=0; i1<S; i1++){
-	  xyz[k][j][i1] = 0.01*i1;
+	  xyz[k][j][i1] = 0.0001*i1;
 	  linxyz[i1+S*j + S*N*k] = xyz[k][j][i1];
+	  // printf("%f \n", linxyz[i1+S*j+S*N*k]);
 	}
       }
     }
@@ -115,19 +139,21 @@ int main()
         if(i1!=i2){
       	soma = 0;
       	for(j=0;   j<N;   j++){
-	  
+	 
       	  for(k=0;   k<3;    k++){
 
-	    if( linmask[k*N+j] ){
+	    if( mask[k][j] ){
+	     
 	      soma+=
-		(linxyz[k*N*S+j*S+i1] - linxyz[k*N*S+j*S+i2])*
-		(linxyz[k*N*S+j*S+i1] - linxyz[k*N*S+j*S+i2]);
+		(linxyz[k*S*N+j*S +i1] -linxyz[k*S*N+j*S +i2])*
+		(xyz[k][j][i1] -linxyz[k*S*N+j*S +i2]);
 	      // }
 	    }
 	  } //for k
+	
 	} //for j
        	cost[i1]+=soma;
-	  } //for if
+	} //for if
     } //for i2
   } //for i1
 
@@ -147,12 +173,13 @@ int main()
   cudaMemcpy(dmask, linmask, sizeof(linmask), cudaMemcpyHostToDevice);
 
   double *d_xyz, *d_cost, cost2[S]={0};
-  cudaMalloc((void **)&d_xyz, sizeof(linxyz));
+  cudaMalloc((void **)&d_xyz,sizexyz*sizeof(double) );
   cudaMalloc((void **)&d_cost, sizeof(cost));
 
-  cudaMemcpy(d_xyz, linxyz, sizeof(linxyz), cudaMemcpyHostToDevice);
+  printf("%f \n" ,linxyz[17]);
+  cudaMemcpy(d_xyz, linxyz, sizexyz*sizeof(double), cudaMemcpyHostToDevice);
 
-  int threadX=S, threadY=N, cacheSize;
+  int threadX=16, threadY=16, cacheSize;
 
  
   dim3 threads(threadX,threadY);
@@ -164,14 +191,31 @@ int main()
   cudaMemcpy(cost2, d_cost, sizeof(cost2), cudaMemcpyDeviceToHost);
   
 
-  for(i1=0; i1<N; i1+=2){
-   printf("i1: %ld cost: %f dcost: %f\n", i1,cost[i1], cost2[i1]);
+  for(i1=0; i1<S; i1+=10){
+     printf("i1: %ld cost: %f dcost: %f\n", i1,cost[i1], cost2[i1]);
    }
   //printf("i1: %d cost: %f dcost: %f\n", 30,cost[30], cost2[30]);
   
   cudaFree(devN); cudaFree(devS); cudaFree(dmask);
-  cudaFree(d_xyz); cudaFree(d_cost);
+  cudaFree(d_xyz); cudaFree(d_cost); free(linxyz);
+
+  //free_data(xyz, 3, N);
   
 
   return 0;
+}
+
+
+void free_data(double ***data, int xlen, int ylen)
+{
+    size_t i, j;
+
+    for (i=0; i < xlen; ++i) {
+        if (data[i] != NULL) {
+            for (j=0; j < ylen; ++j)
+                free(data[i][j]);
+            free(data[i]);
+        }
+    }
+    free(data);
 }

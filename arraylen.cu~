@@ -1,0 +1,32 @@
+#include <stdio.h>
+#include <cuda.h>
+
+__global__ void kernel(double *a){
+
+  int i = threadIdx.x;
+  int j = blockIdx.x;
+
+  printf("%d %d %f \n", i,j, a[i][j], a[i+blockDim.x*j]);
+	 
+  
+}
+
+int main(void)
+{
+
+  double b[10][10];
+  double *a;
+
+  cudaMalloc((void **)&a, sizeof(b));
+
+  cudaMemcpy(a,b,sizeof(b), cudaMemcpyHostToDevice);
+
+  kernel<<<10,10>>>(a);
+
+  
+
+  
+  
+  return 0;
+}
+

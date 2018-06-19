@@ -2,11 +2,11 @@
 
 
 __global__ void mykernel() {
-
+  printf("Hello World \n");
 }
 
 int main(void) {
 	mykernel<<<1, 1 >>>();
-	printf("Hello World \n");
+
 
 }
